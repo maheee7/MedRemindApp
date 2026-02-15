@@ -25,6 +25,9 @@ interface Medication {
     id: string;
     name: string;
     dosage: string;
+    start_date: string;
+    duration_type: 'days' | 'lifetime';
+    duration_days: number | null;
     schedules: { id: string; time: string }[];
 }
 
@@ -116,24 +119,10 @@ export default function CaretakerDashboardPage() {
             });
             setMonthlyCalendarLogs(logsByDate);
 
-            // Calculate monthly stats
-            const now = new Date();
-            const isCurrentMonth = calendarViewDate.getMonth() === now.getMonth() && calendarViewDate.getFullYear() === now.getFullYear();
-            const isPastMonth = calendarViewDate < new Date(now.getFullYear(), now.getMonth(), 1);
-
-            let remaining = 0;
-            if (isCurrentMonth) {
-                const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-                remaining = daysInMonth - now.getDate();
-            } else if (!isPastMonth) {
-                remaining = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() + 1, 0).getDate();
-            }
-
             setStats(prev => ({
                 ...prev,
                 takenThisMonth: uniqueTakenDates.size,
                 missedThisMonth: uniqueMissedDates.size,
-                remainingThisMonth: remaining
             }));
         } catch (err) {
             console.error("Error fetching monthly calendar logs:", err);
@@ -166,7 +155,7 @@ export default function CaretakerDashboardPage() {
             const { data: meds, error: medsError } = await supabase
                 .from('medications')
                 .select(`
-                    id, name, dosage,
+                    id, name, dosage, start_date, duration_type, duration_days,
                     schedules:medication_schedules(id, time)
                 `);
 
@@ -257,10 +246,35 @@ export default function CaretakerDashboardPage() {
 
         const adherence = totalSchedules > 0 ? Math.round((takenToday / totalSchedules) * 100) : 100;
 
+        // Calculate remaining days based on medication course duration
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        let maxRemainingDays = 0;
+        let isLifetime = false;
+
+        meds.forEach(med => {
+            if (med.duration_type === 'lifetime') {
+                isLifetime = true;
+            } else if (med.start_date && med.duration_days) {
+                const startDate = new Date(med.start_date);
+                const endDate = new Date(startDate);
+                endDate.setDate(startDate.getDate() + med.duration_days);
+
+                const diffTime = endDate.getTime() - today.getTime();
+                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+                if (diffDays > maxRemainingDays) {
+                    maxRemainingDays = diffDays;
+                }
+            }
+        });
+
         setStats(prev => ({
             ...prev,
             adherenceRate: adherence,
-            takenThisWeek: takenToday
+            takenThisWeek: takenToday,
+            remainingThisMonth: isLifetime ? 999 : (maxRemainingDays > 0 ? maxRemainingDays : 0)
         }));
     };
 
@@ -485,7 +499,9 @@ export default function CaretakerDashboardPage() {
                                                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Missed</p>
                                                 </div>
                                                 <div className="text-center">
-                                                    <p className="text-xl font-black text-blue-500">{stats.remainingThisMonth} days</p>
+                                                    <p className="text-xl font-black text-blue-500">
+                                                        {stats.remainingThisMonth === 999 ? '∞' : `${stats.remainingThisMonth} days`}
+                                                    </p>
                                                     <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Remaining</p>
                                                 </div>
                                             </div>
