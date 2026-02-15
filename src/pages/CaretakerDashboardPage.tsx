@@ -32,7 +32,7 @@ interface MedicationLog {
     id?: string;
     schedule_id: string;
     status: 'taken' | 'missed';
-    taken_at: string;
+    taken_at: string | null;
     date: string;
     medication_name?: string;
 }
@@ -176,7 +176,7 @@ export default function CaretakerDashboardPage() {
             // Fetch today's logs
             const { data: logs, error: logsError } = await supabase
                 .from('medication_logs')
-                .select('schedule_id, status, taken_at')
+                .select('schedule_id, status, taken_at, date')
                 .eq('date', today);
 
             if (logsError) throw logsError;
@@ -251,9 +251,9 @@ export default function CaretakerDashboardPage() {
         }
     };
 
-    const calculateStats = (meds: Medication[], todayLogs: MedicationLog[]) => {
+    const calculateStats = (meds: Medication[], logs: MedicationLog[]) => {
         const totalSchedules = meds.reduce((acc, med) => acc + med.schedules.length, 0);
-        const takenToday = todayLogs.filter(log => log.status === 'taken').length;
+        const takenToday = logs.filter(log => log.status === 'taken').length;
 
         const adherence = totalSchedules > 0 ? Math.round((takenToday / totalSchedules) * 100) : 100;
 
@@ -517,10 +517,10 @@ export default function CaretakerDashboardPage() {
                                                             </div>
                                                             <div>
                                                                 <h4 className="font-bold text-slate-900">
-                                                                    {new Date(log.date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
+                                                                    {log.date && typeof log.date === 'string' ? new Date(log.date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' }) : 'Unknown Date'}
                                                                 </h4>
                                                                 <p className="text-sm text-slate-500 font-medium mt-0.5">
-                                                                    {log.medication_name} • {log.status === 'taken' ? `Taken at ${new Date(log.taken_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Dose missed'}
+                                                                    {log.medication_name} • {log.status === 'taken' && log.taken_at && typeof log.taken_at === 'string' ? `Taken at ${new Date(log.taken_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'Dose missed'}
                                                                 </p>
                                                             </div>
                                                         </div>

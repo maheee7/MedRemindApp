@@ -16,16 +16,17 @@ export default async function handler(req: any, res: any) {
         const today = new Date().toISOString().split('T')[0];
         const now = new Date();
 
-        // 1. Calculate the time 1 hour ago
-        const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-        const hourStr = oneHourAgo.getHours().toString().padStart(2, '0');
-        const minStr = oneHourAgo.getMinutes().toString().padStart(2, '0');
-        const exactTime = `${hourStr}:${minStr}:00`;
+        // 1. Calculate the time window (checks schedules from 60 to 90 minutes ago)
+        // With a 30-min cron, this ensures every schedule is checked exactly once.
+        const windowEnd = new Date(now.getTime() - 60 * 60 * 1000);
+        const windowStart = new Date(now.getTime() - 90 * 60 * 1000);
 
-        console.log(`Checking for misses at scheduled time: ${exactTime}`);
+        const startTimeStr = `${windowStart.getHours().toString().padStart(2, '0')}:${windowStart.getMinutes().toString().padStart(2, '0')}:00`;
+        const endTimeStr = `${windowEnd.getHours().toString().padStart(2, '0')}:${windowEnd.getMinutes().toString().padStart(2, '0')}:00`;
 
-        // 2. Fetch schedules matching that exact time (approximately)
-        // Note: Depending on cron frequency, you might want a range (e.g., between 59 and 65 mins ago)
+        console.log(`Checking for misses in window: ${startTimeStr} to ${endTimeStr}`);
+
+        // 2. Fetch schedules within this window
         const { data: schedules, error: scheduleError } = await supabase
             .from('medication_schedules')
             .select(`
@@ -36,7 +37,8 @@ export default async function handler(req: any, res: any) {
                     user_id
                 )
             `)
-            .eq('time', exactTime);
+            .gt('time', startTimeStr)
+            .lte('time', endTimeStr);
 
         if (scheduleError) throw scheduleError;
 
