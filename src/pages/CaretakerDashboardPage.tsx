@@ -252,17 +252,27 @@ export default function CaretakerDashboardPage() {
 
         let maxRemainingDays = 0;
         let isLifetime = false;
-
         meds.forEach(med => {
             if (med.duration_type === 'lifetime') {
                 isLifetime = true;
             } else if (med.start_date && med.duration_days) {
-                const startDate = new Date(med.start_date);
+                // Split date string and create a local date to avoid timezone shifts
+                const [year, month, day] = med.start_date.split('-').map(Number);
+                const startDate = new Date(year, month - 1, day);
                 const endDate = new Date(startDate);
                 endDate.setDate(startDate.getDate() + med.duration_days);
 
                 const diffTime = endDate.getTime() - today.getTime();
-                const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                let diffDays = Math.round(diffTime / (1000 * 60 * 60 * 24));
+
+                // Check if all doses for this medication are taken today
+                const medScheduleIds = new Set(med.schedules.map(s => s.id));
+                const medTakenToday = logs.filter(l => l.schedule_id && medScheduleIds.has(l.schedule_id) && l.status === 'taken').length;
+                const isFullyTakenToday = med.schedules.length > 0 && medTakenToday >= med.schedules.length;
+
+                if (isFullyTakenToday && diffDays > 0) {
+                    diffDays -= 1;
+                }
 
                 if (diffDays > maxRemainingDays) {
                     maxRemainingDays = diffDays;
