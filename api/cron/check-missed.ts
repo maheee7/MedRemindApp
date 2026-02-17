@@ -44,15 +44,21 @@ export default async function handler(req: any, res: any) {
     }
 
     try {
-        const today = new Date().toISOString().split('T')[0];
+        // Adjust for IST (India Standard Time) as the server is likely in UTC
         const now = new Date();
+        const IST_OFFSET = 5.5 * 60 * 60 * 1000;
+        const istTime = new Date(now.getTime() + IST_OFFSET);
 
-        // 1. Calculate the time window (checks schedules from 60 to 90 minutes ago)
-        const windowEnd = new Date(now.getTime() - 60 * 60 * 1000);
-        const windowStart = new Date(now.getTime() - 90 * 60 * 1000);
+        // Use IST for the date string to ensure we look at the correct day in India
+        const today = istTime.toISOString().split('T')[0];
 
-        const startTimeStr = `${windowStart.getHours().toString().padStart(2, '0')}:${windowStart.getMinutes().toString().padStart(2, '0')}:00`;
-        const endTimeStr = `${windowEnd.getHours().toString().padStart(2, '0')}:${windowEnd.getMinutes().toString().padStart(2, '0')}:00`;
+        // 1. Calculate the time window in IST (checks schedules from 60 to 90 minutes ago)
+        const windowEnd = new Date(istTime.getTime() - 60 * 60 * 1000);
+        const windowStart = new Date(istTime.getTime() - 90 * 60 * 1000);
+
+        // We use getUTCHours/Minutes because istTime already includes the +5.5h offset
+        const startTimeStr = `${windowStart.getUTCHours().toString().padStart(2, '0')}:${windowStart.getUTCMinutes().toString().padStart(2, '0')}:00`;
+        const endTimeStr = `${windowEnd.getUTCHours().toString().padStart(2, '0')}:${windowEnd.getUTCMinutes().toString().padStart(2, '0')}:00`;
 
         console.log(`Checking for misses in window: ${startTimeStr} to ${endTimeStr}`);
 
@@ -165,7 +171,7 @@ export default async function handler(req: any, res: any) {
                                     <p>Hi Caretaker,</p>
                                     <p>Our safety net system has detected that <strong>${patientDisplay}</strong> has missed their scheduled dose of <strong>${medicineName}</strong>.</p>
                                     <p><strong>Scheduled Time:</strong> ${schedule.time}</p>
-                                    <p><strong>Current Time:</strong> ${now.toLocaleTimeString()}</p>
+                                    <p><strong>Current Time:</strong> ${istTime.getUTCHours().toString().padStart(2, '0')}:${istTime.getUTCMinutes().toString().padStart(2, '0')} IST</p>
                                     <hr />
                                     <p style="font-size: 12px; color: #666;">This is an automated safety alert from MediCare Companion.</p>
                                 </div>
