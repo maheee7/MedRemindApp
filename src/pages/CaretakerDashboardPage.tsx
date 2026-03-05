@@ -80,11 +80,17 @@ export default function CaretakerDashboardPage() {
 
     useEffect(() => {
         fetchData();
+    }, []);
+
+    useEffect(() => {
         fetchCalendarLogs();
     }, [calendarViewDate]);
 
     const fetchCalendarLogs = async () => {
         try {
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) return;
+
             const startOfMonth = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth(), 1);
             const endOfMonth = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() + 1, 0);
             const startStr = startOfMonth.toLocaleDateString('en-CA');
@@ -99,6 +105,7 @@ export default function CaretakerDashboardPage() {
                     schedule_id,
                     medication_schedules(medications(name), medication_id)
                 `)
+                .eq('user_id', user.id)
                 .gte('date', startStr)
                 .lte('date', endStr);
             if (error) throw error;
@@ -109,7 +116,8 @@ export default function CaretakerDashboardPage() {
                 .select(`
                     id, name, start_date, duration_type, duration_days,
                     schedules:medication_schedules(id, time)
-                `);
+                `)
+                .eq('user_id', user.id);
             if (medsError) throw medsError;
 
             // Build a map of logs by date and schedule
@@ -132,7 +140,8 @@ export default function CaretakerDashboardPage() {
 
                 meds.forEach(med => {
                     // Check if this medication is active on this date
-                    const medStart = new Date(med.start_date);
+                    const [y, m, d_start] = med.start_date.split('-').map(Number);
+                    const medStart = new Date(y, m - 1, d_start);
                     let medEnd = null;
                     if (med.duration_type === 'days' && med.duration_days) {
                         medEnd = new Date(medStart);
@@ -162,6 +171,19 @@ export default function CaretakerDashboardPage() {
                 // Remove empty
                 if (logsByDate[dateStr].length === 0) delete logsByDate[dateStr];
             }
+
+            // Ensure all existing logs are picked up (backup pass)
+            logs?.forEach(log => {
+                const dStr = log.date;
+                if (!logsByDate[dStr]) logsByDate[dStr] = [];
+                if (!logsByDate[dStr].some(l => l.status === log.status && l.medication_name === (log.medication_schedules as any)?.medications?.name)) {
+                    logsByDate[dStr].push({
+                        status: log.status,
+                        medication_name: (log.medication_schedules as any)?.medications?.name
+                    });
+                    if (log.status === 'taken') takenDates.add(dStr);
+                }
+            });
 
             setMonthlyCalendarLogs(logsByDate);
             setStats(prev => ({
@@ -195,13 +217,14 @@ export default function CaretakerDashboardPage() {
                 setPatientName(profile.patient_name);
             }
 
-            // Fetch medications (assuming for now the caretaker sees all medications they manage)
+            // Fetch medications
             const { data: meds, error: medsError } = await supabase
                 .from('medications')
                 .select(`
                     id, name, dosage, start_date, duration_type, duration_days,
                     schedules:medication_schedules(id, time)
-                `);
+                `)
+                .eq('user_id', user.id);
             if (medsError) throw medsError;
             setMedications(meds || []);
 
@@ -209,6 +232,7 @@ export default function CaretakerDashboardPage() {
             const { data: logs, error: logsError } = await supabase
                 .from('medication_logs')
                 .select('schedule_id, status, taken_at, date')
+                .eq('user_id', user.id)
                 .eq('date', today);
             if (logsError) throw logsError;
             const logsMap: Record<string, MedicationLog> = {};
@@ -232,6 +256,7 @@ export default function CaretakerDashboardPage() {
                     date,
                     medication_schedules(medication_id, medications(name))
                 `)
+                .eq('user_id', user.id)
                 .gte('date', startStr)
                 .lte('date', endStr)
                 .order('date', { ascending: false });
@@ -249,10 +274,12 @@ export default function CaretakerDashboardPage() {
             for (let i = 0; i < 30; i++) {
                 const dateObj = new Date();
                 dateObj.setDate(dateObj.getDate() - i);
+                dateObj.setHours(0, 0, 0, 0);
                 const dateStr = dateObj.toLocaleDateString('en-CA');
                 meds.forEach(med => {
                     // Check if this medication is active on this date
-                    const medStart = new Date(med.start_date);
+                    const [y, m, d_start] = med.start_date.split('-').map(Number);
+                    const medStart = new Date(y, m - 1, d_start);
                     let medEnd = null;
                     if (med.duration_type === 'days' && med.duration_days) {
                         medEnd = new Date(medStart);

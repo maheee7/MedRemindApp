@@ -40,11 +40,15 @@ export default function PatientDashboardPage() {
     });
     const [viewDate, setViewDate] = useState(new Date());
     const [monthlyLogs, setMonthlyLogs] = useState<Record<string, { status: 'taken' | 'missed' }[]>>({});
+    const [patientName, setPatientName] = useState("");
 
     const today = new Date().toLocaleDateString('en-CA');
 
     useEffect(() => {
         fetchData();
+    }, []);
+
+    useEffect(() => {
         fetchMonthlyLogs();
     }, [viewDate]);
 
@@ -139,6 +143,17 @@ export default function PatientDashboardPage() {
             if (!user) {
                 navigate("/login");
                 return;
+            }
+
+            // Fetch patient profile
+            const { data: profile } = await supabase
+                .from('profiles')
+                .select('patient_name')
+                .eq('id', user.id)
+                .single();
+
+            if (profile?.patient_name) {
+                setPatientName(profile.patient_name);
             }
 
 
@@ -351,7 +366,7 @@ export default function PatientDashboardPage() {
                         </div>
                         <div>
                             <h1 className="text-lg font-bold text-slate-900 leading-none">MediCare Companion</h1>
-                            <p className="text-xs text-slate-400 font-medium mt-1 uppercase tracking-wider">Patient View</p>
+                            <p className="text-xs text-slate-400 font-medium mt-1 uppercase tracking-wider">{patientName ? `Patient: ${patientName}` : "Patient View"}</p>
                         </div>
                     </div>
                     <div className="flex items-center gap-4">
@@ -381,7 +396,7 @@ export default function PatientDashboardPage() {
 
                         <div className="flex flex-col md:flex-row md:items-end justify-between gap-8">
                             <div className="space-y-2">
-                                <p className="text-blue-100 font-semibold text-lg">{getGreeting()}!</p>
+                                <p className="text-blue-100 font-semibold text-lg">{getGreeting()}{patientName ? `, ${patientName}` : ""}!</p>
                                 <h2 className="text-4xl sm:text-5xl font-black tracking-tight">Ready to stay on track?</h2>
                                 <p className="text-blue-100/80 max-w-md font-medium">
                                     You've completed {stats.dailyProgress}% of your medication for today. Great job!
