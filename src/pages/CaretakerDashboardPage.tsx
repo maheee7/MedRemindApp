@@ -75,7 +75,7 @@ export default function CaretakerDashboardPage() {
     const [savingSettings, setSavingSettings] = useState(false);
     const [calendarViewDate, setCalendarViewDate] = useState(new Date());
     const [monthlyCalendarLogs, setMonthlyCalendarLogs] = useState<Record<string, { status: 'taken' | 'missed'; medication_name?: string }[]>>({});
-    const [patientName, setPatientName] = useState("Eleanor Thompson");
+    const [patientName, setPatientName] = useState("Name");
 
     const today = new Date().toLocaleDateString('en-CA');
 
@@ -86,43 +86,89 @@ export default function CaretakerDashboardPage() {
 
     const fetchCalendarLogs = async () => {
         try {
-            const startOfMonth = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth(), 1).toLocaleDateString('en-CA');
-            const endOfMonth = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() + 1, 0).toLocaleDateString('en-CA');
+            const startOfMonth = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth(), 1);
+            const endOfMonth = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth() + 1, 0);
+            const startStr = startOfMonth.toLocaleDateString('en-CA');
+            const endStr = endOfMonth.toLocaleDateString('en-CA');
 
+            // Fetch all logs for the month
             const { data: logs, error } = await supabase
                 .from('medication_logs')
                 .select(`
-                    status, 
+                    status,
                     date,
-                    medication_schedules(medications(name))
+                    schedule_id,
+                    medication_schedules(medications(name), medication_id)
                 `)
-                .gte('date', startOfMonth)
-                .lte('date', endOfMonth);
-
+                .gte('date', startStr)
+                .lte('date', endStr);
             if (error) throw error;
 
+            // Fetch all medications and schedules
+            const { data: meds, error: medsError } = await supabase
+                .from('medications')
+                .select(`
+                    id, name, start_date, duration_type, duration_days,
+                    schedules:medication_schedules(id, time)
+                `);
+            if (medsError) throw medsError;
+
+            // Build a map of logs by date and schedule
             const logsByDate: Record<string, { status: 'taken' | 'missed'; medication_name?: string }[]> = {};
-            const uniqueTakenDates = new Set<string>();
-            const uniqueMissedDates = new Set<string>();
+            const takenDates = new Set<string>();
+            const missedDates = new Set<string>();
 
+            // Map: date -> schedule_id -> log
+            const logMap: Record<string, Record<string, any>> = {};
             logs?.forEach(log => {
-                if (!logsByDate[log.date]) {
-                    logsByDate[log.date] = [];
-                }
-                logsByDate[log.date].push({
-                    status: log.status as 'taken' | 'missed',
-                    medication_name: (log.medication_schedules as any)?.medications?.name
-                });
-
-                if (log.status === 'taken') uniqueTakenDates.add(log.date);
-                if (log.status === 'missed') uniqueMissedDates.add(log.date);
+                if (!logMap[log.date]) logMap[log.date] = {};
+                logMap[log.date][log.schedule_id] = log;
             });
-            setMonthlyCalendarLogs(logsByDate);
 
+            // For each day in the month, for each schedule, check if log exists
+            for (let d = 1; d <= endOfMonth.getDate(); d++) {
+                const dateObj = new Date(calendarViewDate.getFullYear(), calendarViewDate.getMonth(), d);
+                const dateStr = dateObj.toLocaleDateString('en-CA');
+                logsByDate[dateStr] = logsByDate[dateStr] || [];
+
+                meds.forEach(med => {
+                    // Check if this medication is active on this date
+                    const medStart = new Date(med.start_date);
+                    let medEnd = null;
+                    if (med.duration_type === 'days' && med.duration_days) {
+                        medEnd = new Date(medStart);
+                        medEnd.setDate(medEnd.getDate() + med.duration_days - 1);
+                    }
+                    if (dateObj < medStart || (medEnd && dateObj > medEnd)) return;
+
+                    med.schedules.forEach(schedule => {
+                        const log = logMap[dateStr]?.[schedule.id];
+                        if (log) {
+                            logsByDate[dateStr].push({
+                                status: log.status,
+                                medication_name: med.name
+                            });
+                            if (log.status === 'taken') takenDates.add(dateStr);
+                            if (log.status === 'missed') missedDates.add(dateStr);
+                        } else {
+                            // No log: should be missed
+                            logsByDate[dateStr].push({
+                                status: 'missed',
+                                medication_name: med.name
+                            });
+                            missedDates.add(dateStr);
+                        }
+                    });
+                });
+                // Remove empty
+                if (logsByDate[dateStr].length === 0) delete logsByDate[dateStr];
+            }
+
+            setMonthlyCalendarLogs(logsByDate);
             setStats(prev => ({
                 ...prev,
-                takenThisMonth: uniqueTakenDates.size,
-                missedThisMonth: uniqueMissedDates.size,
+                takenThisMonth: takenDates.size,
+                missedThisMonth: missedDates.size,
             }));
         } catch (err) {
             console.error("Error fetching monthly calendar logs:", err);
@@ -151,14 +197,12 @@ export default function CaretakerDashboardPage() {
             }
 
             // Fetch medications (assuming for now the caretaker sees all medications they manage)
-            // In a real app, there would be a patient-link table. For now, we'll fetch all.
             const { data: meds, error: medsError } = await supabase
                 .from('medications')
                 .select(`
                     id, name, dosage, start_date, duration_type, duration_days,
                     schedules:medication_schedules(id, time)
                 `);
-
             if (medsError) throw medsError;
             setMedications(meds || []);
 
@@ -167,9 +211,7 @@ export default function CaretakerDashboardPage() {
                 .from('medication_logs')
                 .select('schedule_id, status, taken_at, date')
                 .eq('date', today);
-
             if (logsError) throw logsError;
-
             const logsMap: Record<string, MedicationLog> = {};
             logs?.forEach(log => {
                 logsMap[log.schedule_id] = log;
@@ -179,30 +221,72 @@ export default function CaretakerDashboardPage() {
             // Fetch historical logs (last 30 days)
             const thirtyDaysAgo = new Date();
             thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+            const startStr = thirtyDaysAgo.toLocaleDateString('en-CA');
+            const endStr = new Date().toLocaleDateString('en-CA');
 
             const { data: history, error: historyError } = await supabase
                 .from('medication_logs')
                 .select(`
-                    schedule_id, 
-                    status, 
-                    taken_at, 
+                    schedule_id,
+                    status,
+                    taken_at,
                     date,
                     medication_schedules(medication_id, medications(name))
                 `)
-                .gte('date', thirtyDaysAgo.toLocaleDateString('en-CA'))
+                .gte('date', startStr)
+                .lte('date', endStr)
                 .order('date', { ascending: false });
-
             if (historyError) throw historyError;
 
-            const formattedHistory = (history || []).map(h => ({
-                schedule_id: h.schedule_id,
-                status: h.status as 'taken' | 'missed',
-                taken_at: h.taken_at,
-                date: h.date,
-                medication_name: (h.medication_schedules as any)?.medications?.name
-            }));
+            // Build a map: date -> schedule_id -> log
+            const logMap: Record<string, Record<string, any>> = {};
+            (history || []).forEach(log => {
+                if (!logMap[log.date]) logMap[log.date] = {};
+                logMap[log.date][log.schedule_id] = log;
+            });
 
-            setHistoricalLogs(formattedHistory);
+            // For each day in the last 30 days, for each schedule, check if log exists
+            const allLogs: MedicationLog[] = [];
+            for (let i = 0; i < 30; i++) {
+                const dateObj = new Date();
+                dateObj.setDate(dateObj.getDate() - i);
+                const dateStr = dateObj.toLocaleDateString('en-CA');
+                meds.forEach(med => {
+                    // Check if this medication is active on this date
+                    const medStart = new Date(med.start_date);
+                    let medEnd = null;
+                    if (med.duration_type === 'days' && med.duration_days) {
+                        medEnd = new Date(medStart);
+                        medEnd.setDate(medEnd.getDate() + med.duration_days - 1);
+                    }
+                    if (dateObj < medStart || (medEnd && dateObj > medEnd)) return;
+
+                    med.schedules.forEach(schedule => {
+                        const log = logMap[dateStr]?.[schedule.id];
+                        if (log) {
+                            allLogs.push({
+                                schedule_id: log.schedule_id,
+                                status: log.status,
+                                taken_at: log.taken_at,
+                                date: log.date,
+                                medication_name: (log.medication_schedules as any)?.medications?.name
+                            });
+                        } else {
+                            // No log: missed
+                            allLogs.push({
+                                schedule_id: schedule.id,
+                                status: 'missed',
+                                taken_at: null,
+                                date: dateStr,
+                                medication_name: med.name
+                            });
+                        }
+                    });
+                });
+            }
+            // Sort by date descending
+            allLogs.sort((a, b) => b.date.localeCompare(a.date));
+            setHistoricalLogs(allLogs);
 
             // Fetch Notification Settings from User Metadata
             const settings = (user.user_metadata as any)?.notificationSettings || {
@@ -215,7 +299,7 @@ export default function CaretakerDashboardPage() {
             setNotificationSettings(settings);
 
             // Calculate real stats
-            calculateStats(meds || [], logs || []);
+            calculateStats(meds || [], logs || [], allLogs);
 
         } catch (err) {
             console.error("Error fetching caretaker dashboard data:", err);
@@ -240,11 +324,32 @@ export default function CaretakerDashboardPage() {
         }
     };
 
-    const calculateStats = (meds: Medication[], logs: MedicationLog[]) => {
+    const calculateStats = (meds: Medication[], logs: MedicationLog[], historicalLogs?: MedicationLog[]) => {
         const totalSchedules = meds.reduce((acc, med) => acc + med.schedules.length, 0);
         const takenToday = logs.filter(log => log.status === 'taken').length;
 
         const adherence = totalSchedules > 0 ? Math.round((takenToday / totalSchedules) * 100) : 100;
+
+        // Day streak: consecutive previous days (ending with yesterday) with no missed logs
+        let streak = 0;
+        if (historicalLogs && historicalLogs.length > 0) {
+            const logsByDate: Record<string, MedicationLog[]> = {};
+            historicalLogs.forEach(l => {
+                if (!logsByDate[l.date]) logsByDate[l.date] = [];
+                logsByDate[l.date].push(l);
+            });
+
+            const d = new Date();
+            d.setDate(d.getDate() - 1); // start from yesterday
+            while (true) {
+                const dateStr = d.toLocaleDateString('en-CA');
+                const dayLogs = logsByDate[dateStr];
+                if (!dayLogs || dayLogs.length === 0) break;
+                if (dayLogs.some(l => l.status === 'missed')) break;
+                streak++;
+                d.setDate(d.getDate() - 1);
+            }
+        }
 
         // Calculate remaining days based on medication course duration
         const today = new Date();
@@ -283,6 +388,7 @@ export default function CaretakerDashboardPage() {
         setStats(prev => ({
             ...prev,
             adherenceRate: adherence,
+            streak,
             takenThisWeek: takenToday,
             remainingThisMonth: isLifetime ? 999 : (maxRemainingDays > 0 ? maxRemainingDays : 0)
         }));
@@ -384,9 +490,8 @@ export default function CaretakerDashboardPage() {
                             </div>
                         </div>
 
-                        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 w-full md:w-auto">
+                        <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 w-full md:w-auto">
                             {[
-                                { label: 'Adherence Rate', value: `${stats.adherenceRate}%` },
                                 { label: 'Current Streak', value: stats.streak },
                                 { label: 'Missed This Month', value: stats.missedThisMonth },
                                 { label: 'Taken This Week', value: stats.takenThisWeek },
@@ -430,94 +535,87 @@ export default function CaretakerDashboardPage() {
 
                                 <Card className="border-none shadow-sm ring-1 ring-slate-100">
                                     <CardContent className="p-6">
-                                        {medications.length === 0 ? (
-                                            <p className="text-center text-slate-500 py-8">No medication schedules found for today.</p>
-                                        ) : (
-                                            <div className="space-y-4">
-                                                {medications.map(med => (
-                                                    med.schedules.map(schedule => {
-                                                        const log = dailyLogs[schedule.id];
-                                                        const isTaken = !!log;
-                                                        // Check if missed (> 1 hour)
-                                                        const [hours, minutes] = schedule.time.split(':').map(Number);
-                                                        const scheduledTime = new Date();
-                                                        scheduledTime.setHours(hours, minutes, 0, 0);
-                                                        const now = new Date();
-                                                        const isCritical = !isTaken && (now.getTime() - scheduledTime.getTime() > 3600000);
+                                        {/* Check if all medication courses are completed */}
+                                        {(() => {
+                                            if (medications.length === 0) {
+                                                return <p className="text-center text-slate-500 py-8">No medication schedules found for today.</p>;
+                                            }
+                                            // Check if all courses are completed
+                                            const todayDate = new Date();
+                                            const allCompleted = medications.every(med => {
+                                                if (med.duration_type === 'lifetime') return false;
+                                                if (!med.start_date || !med.duration_days) return false;
+                                                const [y, m, d] = med.start_date.split('-').map(Number);
+                                                const start = new Date(y, m - 1, d);
+                                                const end = new Date(start);
+                                                end.setDate(start.getDate() + med.duration_days - 1);
+                                                return todayDate > end;
+                                            });
+                                            if (allCompleted) {
+                                                return (
+                                                    <div className="flex flex-col items-center justify-center py-12">
+                                                        <CheckCircle2 className="h-12 w-12 text-emerald-500 mb-4" />
+                                                        <h4 className="text-xl font-black text-emerald-600 mb-2">Medication course completed</h4>
+                                                        <p className="text-slate-500 font-medium">No further actions allowed. All scheduled medication courses have finished.</p>
+                                                    </div>
+                                                );
+                                            }
+                                            // Otherwise, show today's status as before
+                                            return (
+                                                <div className="space-y-4">
+                                                    {medications.map(med => (
+                                                        med.schedules.map(schedule => {
+                                                            const log = dailyLogs[schedule.id];
+                                                            const isTaken = !!log;
+                                                            // Check if missed (> 1 hour)
+                                                            const [hours, minutes] = schedule.time.split(':').map(Number);
+                                                            const scheduledTime = new Date();
+                                                            scheduledTime.setHours(hours, minutes, 0, 0);
+                                                            const now = new Date();
+                                                            const isCritical = !isTaken && (now.getTime() - scheduledTime.getTime() > 3600000);
 
-                                                        return (
-                                                            <div key={schedule.id} className="flex items-center justify-between p-4 rounded-2xl bg-slate-50 border border-slate-100 group">
-                                                                <div className="flex items-center gap-4">
-                                                                    <div className={cn(
-                                                                        "p-3 rounded-xl",
-                                                                        isTaken ? "bg-emerald-100 text-emerald-600" : "bg-white text-slate-400"
-                                                                    )}>
-                                                                        <Pill className="h-5 w-5" />
+                                                            return (
+                                                                <div key={schedule.id} className="flex items-center justify-between p-4 rounded-2xl bg-slate-50 border border-slate-100 group">
+                                                                    <div className="flex items-center gap-4">
+                                                                        <div className={cn(
+                                                                            "p-3 rounded-xl",
+                                                                            isTaken ? "bg-emerald-100 text-emerald-600" : "bg-white text-slate-400"
+                                                                        )}>
+                                                                            <Pill className="h-5 w-5" />
+                                                                        </div>
+                                                                        <div>
+                                                                            <h4 className="font-bold">{med.name}</h4>
+                                                                            <p className="text-sm text-slate-500 font-medium flex items-center gap-1">
+                                                                                <Clock className="h-3 w-3" />
+                                                                                {schedule.time.slice(0, 5)}
+                                                                            </p>
+                                                                        </div>
                                                                     </div>
-                                                                    <div>
-                                                                        <h4 className="font-bold">{med.name}</h4>
-                                                                        <p className="text-sm text-slate-500 font-medium flex items-center gap-1">
-                                                                            <Clock className="h-3 w-3" />
-                                                                            {schedule.time.slice(0, 5)}
-                                                                        </p>
+                                                                    <div className="flex items-center gap-4">
+                                                                        {isCritical && (
+                                                                            <span className="flex items-center gap-1.5 text-xs font-black uppercase tracking-tighter text-rose-600 bg-rose-50 px-2.5 py-1 rounded-full animate-pulse">
+                                                                                <AlertCircle className="h-3.5 w-3.5" />
+                                                                                Critical Miss
+                                                                            </span>
+                                                                        )}
+                                                                        <div className={cn(
+                                                                            "px-4 py-1.5 rounded-xl text-xs font-black uppercase tracking-widest",
+                                                                            isTaken ? "bg-emerald-500 text-white" : "bg-orange-500 text-white"
+                                                                        )}>
+                                                                            {isTaken ? 'Taken' : 'Pending'}
+                                                                        </div>
                                                                     </div>
                                                                 </div>
-                                                                <div className="flex items-center gap-4">
-                                                                    {isCritical && (
-                                                                        <span className="flex items-center gap-1.5 text-xs font-black uppercase tracking-tighter text-rose-600 bg-rose-50 px-2.5 py-1 rounded-full animate-pulse">
-                                                                            <AlertCircle className="h-3.5 w-3.5" />
-                                                                            Critical Miss
-                                                                        </span>
-                                                                    )}
-                                                                    <div className={cn(
-                                                                        "px-4 py-1.5 rounded-xl text-xs font-black uppercase tracking-widest",
-                                                                        isTaken ? "bg-emerald-500 text-white" : "bg-orange-500 text-white"
-                                                                    )}>
-                                                                        {isTaken ? 'Taken' : 'Pending'}
-                                                                    </div>
-                                                                </div>
-                                                            </div>
-                                                        );
-                                                    })
-                                                ))}
-                                            </div>
-                                        )}
+                                                            );
+                                                        })
+                                                    ))}
+                                                </div>
+                                            );
+                                        })()}
                                     </CardContent>
                                 </Card>
 
-                                <div className="space-y-4">
-                                    <h3 className="text-xl font-bold text-slate-800 px-2">Monthly Adherence Progress</h3>
-                                    <Card className="border-none shadow-sm ring-1 ring-slate-100">
-                                        <CardContent className="p-8 space-y-6">
-                                            <div className="flex items-center justify-between">
-                                                <span className="text-sm font-bold text-slate-600 uppercase tracking-widest">Overall Progress</span>
-                                                <span className="text-sm font-black text-slate-900">{stats.adherenceRate}%</span>
-                                            </div>
-                                            <div className="h-4 w-full bg-slate-100 rounded-full overflow-hidden">
-                                                <div
-                                                    className="h-full bg-blue-600 transition-all duration-1000"
-                                                    style={{ width: `${stats.adherenceRate}%` }}
-                                                />
-                                            </div>
-                                            <div className="grid grid-cols-3 gap-4 pt-4 border-t border-slate-50">
-                                                <div className="text-center">
-                                                    <p className="text-xl font-black text-emerald-600">{stats.takenThisMonth} days</p>
-                                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Taken</p>
-                                                </div>
-                                                <div className="text-center">
-                                                    <p className="text-xl font-black text-rose-500">{stats.missedThisMonth} days</p>
-                                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Missed</p>
-                                                </div>
-                                                <div className="text-center">
-                                                    <p className="text-xl font-black text-blue-500">
-                                                        {stats.remainingThisMonth === 999 ? '∞' : `${stats.remainingThisMonth} days`}
-                                                    </p>
-                                                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Remaining</p>
-                                                </div>
-                                            </div>
-                                        </CardContent>
-                                    </Card>
-                                </div>
+                                {/* Monthly Adherence Progress removed for now */}
                             </div>
                         )}
                         {activeTab === 'activity' && (
@@ -611,14 +709,17 @@ export default function CaretakerDashboardPage() {
 
                                                 const hasTaken = dayLogs.some(l => l.status === 'taken');
                                                 const hasMissed = dayLogs.some(l => l.status === 'missed');
+                                                // Partial: at least one taken and one missed
+                                                const isPartial = hasTaken && hasMissed;
 
                                                 elements.push(
                                                     <div key={day} className="relative flex flex-col items-center group cursor-help">
                                                         <div className={cn(
                                                             "h-10 w-10 rounded-2xl flex items-center justify-center text-sm font-black transition-all",
                                                             isToday ? "bg-blue-600 text-white shadow-lg shadow-blue-200" : "text-slate-600 hover:bg-slate-100",
-                                                            hasTaken && !isToday && "bg-emerald-50 text-emerald-600 ring-2 ring-emerald-100",
-                                                            hasMissed && !isToday && "bg-rose-50 text-rose-600 ring-2 ring-rose-100"
+                                                            isPartial && !isToday && "bg-orange-50 text-orange-600 ring-2 ring-orange-200",
+                                                            !isPartial && hasTaken && !isToday && "bg-emerald-50 text-emerald-600 ring-2 ring-emerald-100",
+                                                            !isPartial && hasMissed && !isToday && "bg-rose-50 text-rose-600 ring-2 ring-rose-100"
                                                         )}>
                                                             {day}
                                                         </div>
@@ -640,6 +741,10 @@ export default function CaretakerDashboardPage() {
                                         <div className="flex items-center gap-3">
                                             <div className="h-4 w-4 rounded-lg bg-emerald-100 ring-2 ring-emerald-200" />
                                             <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Medication Taken</span>
+                                        </div>
+                                        <div className="flex items-center gap-3">
+                                            <div className="h-4 w-4 rounded-lg bg-orange-100 ring-2 ring-orange-200" />
+                                            <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Partially Taken</span>
                                         </div>
                                         <div className="flex items-center gap-3">
                                             <div className="h-4 w-4 rounded-lg bg-rose-100 ring-2 ring-rose-200" />
@@ -665,7 +770,7 @@ export default function CaretakerDashboardPage() {
                                         {/* Toggles */}
                                         {[
                                             { id: 'emailNotifications', label: 'Email Notifications', desc: 'Receive medication alerts via email' },
-                                            { id: 'missedAlerts', label: 'Missed Medication Alerts', desc: 'Get notified when medication is not taken on time' }
+                                            // { id: 'missedAlerts', label: 'Missed Medication Alerts', desc: 'Get notified when medication is not taken on time' }
                                         ].map(item => (
                                             <div key={item.id} className="flex items-center justify-between group">
                                                 <div className="space-y-1">
@@ -696,12 +801,12 @@ export default function CaretakerDashboardPage() {
                                                     onChange={e => setNotificationSettings(p => ({ ...p, alertThresholdHours: Number(e.target.value) }))}
                                                 >
                                                     <option value={1}>1 Hour After Miss</option>
-                                                    <option value={2}>2 Hours After Miss</option>
-                                                    <option value={3}>3 Hours After Miss</option>
+                                                    {/* <option value={2}>2 Hours After Miss</option>
+                                                    <option value={3}>3 Hours After Miss</option> */}
                                                 </select>
                                                 <p className="text-[10px] text-slate-400 font-bold px-1 uppercase tracking-tighter">Time to wait before sending critical alert</p>
                                             </div>
-                                            <div className="space-y-3">
+                                            {/* <div className="space-y-3">
                                                 <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-1">Daily Reminder Time</label>
                                                 <input
                                                     type="time"
@@ -710,7 +815,7 @@ export default function CaretakerDashboardPage() {
                                                     onChange={e => setNotificationSettings(p => ({ ...p, dailyReminderTime: e.target.value }))}
                                                 />
                                                 <p className="text-[10px] text-slate-400 font-bold px-1 uppercase tracking-tighter">Time to check if today's medication was taken</p>
-                                            </div>
+                                            </div> */}
                                         </div>
 
                                         <div className="space-y-3">
@@ -784,14 +889,14 @@ export default function CaretakerDashboardPage() {
                                     )}
                                     {sendingEmail ? "Sending..." : "Send Reminder Email"}
                                 </Button>
-                                <Button
+                                {/* <Button
                                     className="w-full justify-start gap-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 h-12 rounded-xl group"
                                     variant="outline"
                                     onClick={() => setActiveTab('notifications')}
                                 >
                                     <Bell className="h-4 w-4 text-orange-500 transition-transform group-hover:scale-110" />
                                     Configure Notifications
-                                </Button>
+                                </Button> */}
                                 <Button
                                     className="w-full justify-start gap-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 h-12 rounded-xl group"
                                     variant="outline"

@@ -54,23 +54,77 @@ export default function PatientDashboardPage() {
             const startOfMonth = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1).toLocaleDateString('en-CA');
             const endOfMonth = new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 0).toLocaleDateString('en-CA');
 
+            // Fetch all medications for the user (need start_date, duration_days)
+            const { data: meds, error: medsError } = await supabase
+                .from('medications')
+                .select('id, start_date, duration_days')
+                .eq('user_id', user.id);
+            if (medsError) throw medsError;
+
+            // Fetch all logs for this month
             const { data: logs, error } = await supabase
                 .from('medication_logs')
-                .select('date, status')
+                .select('date, medication_id, status')
                 .eq('user_id', user.id)
                 .gte('date', startOfMonth)
                 .lte('date', endOfMonth);
-
             if (error) throw error;
 
-            const logsByDate: Record<string, { status: 'taken' | 'missed' }[]> = {};
+            // Build a lookup for logs by medication and date
+            const logsByMedDate: Record<string, Record<string, { status: 'taken' | 'missed' }>> = {};
             logs?.forEach(log => {
-                if (!logsByDate[log.date]) {
-                    logsByDate[log.date] = [];
-                }
-                logsByDate[log.date].push({ status: log.status });
+                if (!logsByMedDate[log.medication_id]) logsByMedDate[log.medication_id] = {};
+                logsByMedDate[log.medication_id][log.date] = { status: log.status };
             });
+
+            console.log(logsByMedDate,"check the daily logs");
+            console.log(meds,"check the meds");
+            
+
+            // Build missed days for each medication
+            const logsByDate: Record<string, { status: 'taken' | 'missed' }[]> = {};
+            const todayStr = new Date().toLocaleDateString('en-CA');
+            meds?.forEach(med => {
+                if (!med.start_date || !med.duration_days) return;
+                const start = new Date(med.start_date);
+                const duration = med.duration_days;
+                
+                console.log(start, duration,"days calc");
+                
+                for (let i = 0; i < duration; i++) {
+                    const d = new Date(start);
+                    d.setDate(start.getDate() + i);
+                    const dateStr = d.toLocaleDateString('en-CA');
+                    // Only consider days in this month
+                    if (dateStr < startOfMonth || dateStr > endOfMonth) continue;
+                    // Do not mark today or future days as missed
+                    if (dateStr >= todayStr) continue;
+                    // If no log for this med/date, mark as missed
+                    if (!logsByMedDate[med.id] || !logsByMedDate[med.id][dateStr]) {
+                        if (!logsByDate[dateStr]) logsByDate[dateStr] = [];
+                        logsByDate[dateStr].push({ status: 'missed' });
+                    } else {
+                        // If there is a log, add its status
+                        if (!logsByDate[dateStr]) logsByDate[dateStr] = [];
+                        logsByDate[dateStr].push({ status: logsByMedDate[med.id][dateStr].status });
+                    }
+                }
+            });
+
+            console.log("logsbydate",logsByMedDate,"dddd",logsByDate);
+            
+            // Also add any taken/missed logs that exist for this month but not in the above loop (e.g., for lifetime meds)
+            logs?.forEach(log => {
+                if (!logsByDate[log.date]) logsByDate[log.date] = [];
+                if (!logsByDate[log.date].some(l => l.status === log.status)) {
+                    logsByDate[log.date].push({ status: log.status });
+                }
+            });
+
+            console.log(logsByDate,"999");
+            
             setMonthlyLogs(logsByDate);
+            calculateStats(logsByDate);
         } catch (err) {
             console.error("Error fetching monthly logs:", err);
         }
@@ -85,16 +139,18 @@ export default function PatientDashboardPage() {
                 return;
             }
 
-            // Fetch medications with schedules that have started
+
+            // Fetch medications with schedules that have started, including start_date and duration_days
             const { data: meds, error: medsError } = await supabase
                 .from('medications')
                 .select(`
-                    id, name, dosage, duration_type,
+                    id, name, dosage, duration_type, start_date, duration_days,
                     schedules:medication_schedules(id, time)
                 `)
                 .eq('user_id', user.id)
                 .lte('start_date', today);
 
+            console.log('meds', meds);
             if (medsError) throw medsError;
             setMedications(meds || []);
 
@@ -106,6 +162,8 @@ export default function PatientDashboardPage() {
                 .eq('date', today);
 
             if (logsError) throw logsError;
+
+            console.log(logs, "why array")
 
             const logsMap: Record<string, MedicationLog> = {};
             logs?.forEach(log => {
@@ -123,14 +181,42 @@ export default function PatientDashboardPage() {
         }
     };
 
-    const calculateStats = (meds: Medication[], logs: any[]) => {
-        const totalSchedules = meds.reduce((acc, med) => acc + med.schedules.length, 0);
-        const completedSchedules = logs.filter(l => l.status === 'taken').length;
+    // Calculate daily progress, day streak, and monthly rate from monthlyLogs
+    const calculateStats = (logsByDate: Record<string, { status: 'taken' | 'missed' }[]>) => {
+        // Daily progress: percent of today's doses taken
+        const todayStr = new Date().toLocaleDateString('en-CA');
+        const todayLogs = logsByDate[todayStr] || [];
+        const totalToday = todayLogs.length;
+        const takenToday = todayLogs.filter(l => l.status === 'taken').length;
+        const dailyProgress = totalToday > 0 ? Math.round((takenToday / totalToday) * 100) : 0;
+
+        // Day streak: consecutive previous days (ending with yesterday) with no missed logs
+        let streak = 0;
+        let d = new Date();
+        d.setDate(d.getDate() - 1); // start from yesterday
+        while (true) {
+            const dateStr = d.toLocaleDateString('en-CA');
+            const logs = logsByDate[dateStr];
+            if (!logs || logs.length === 0) break;
+            if (logs.some(l => l.status === 'missed')) break;
+            streak++;
+            d.setDate(d.getDate() - 1);
+        }
+
+        // Monthly rate: percent of all taken out of (taken + missed) for the month
+        let taken = 0, missed = 0;
+        Object.values(logsByDate).forEach(dayLogs => {
+            dayLogs.forEach(l => {
+                if (l.status === 'taken') taken++;
+                if (l.status === 'missed') missed++;
+            });
+        });
+        const monthlyRate = taken + missed > 0 ? Math.round((taken / (taken + missed)) * 100) : 0;
 
         setStats({
-            dailyProgress: totalSchedules > 0 ? Math.round((completedSchedules / totalSchedules) * 100) : 0,
-            streak: 5, // Mock streak for UI
-            monthlyRate: 94 // Mock monthly rate for UI
+            dailyProgress,
+            streak,
+            monthlyRate
         });
     };
 
@@ -347,104 +433,132 @@ export default function PatientDashboardPage() {
                             </Card>
                         ) : (
                             <div className="space-y-4">
-                                {medications.map(med => (
-                                    med.schedules.map(schedule => {
-                                        const isTaken = !!dailyLogs[schedule.id];
-                                        return (
-                                            <Card
-                                                key={schedule.id}
-                                                className={cn(
-                                                    "transition-all duration-300 border-none shadow-sm hover:shadow-md",
-                                                    isTaken ? "bg-emerald-50/50 ring-1 ring-emerald-100" : "bg-white ring-1 ring-slate-100"
-                                                )}
-                                            >
-                                                <CardContent className="p-4 sm:p-5 flex items-center justify-between gap-4">
-                                                    <div className="flex items-center gap-4">
-                                                        <div className={cn(
-                                                            "h-12 w-12 rounded-2xl flex items-center justify-center transition-colors",
-                                                            isTaken ? "bg-emerald-100 text-emerald-600" : "bg-blue-50 text-blue-600"
-                                                        )}>
-                                                            <Pill className="h-6 w-6" />
-                                                        </div>
-                                                        <div>
-                                                            <h4 className="font-bold text-slate-900">{med.name}</h4>
-                                                            <div className="flex items-center gap-2 text-slate-500 text-sm font-medium">
-                                                                <span>{med.dosage}</span>
-                                                                <span className="h-1 w-1 bg-slate-300 rounded-full" />
-                                                                <div className="flex items-center text-blue-600 font-bold">
-                                                                    <Clock className="h-3.5 w-3.5 mr-1" />
-                                                                    {schedule.time.slice(0, 5)}
+                                {medications.map(med => {
+                                    // Calculate if course is completed
+                                    let courseCompleted = false;
+                                    let courseEndDate = null;
+                                    if (med.start_date && med.duration_days) {
+                                        const start = new Date(med.start_date);
+                                        const end = new Date(start);
+                                        end.setDate(start.getDate() + med.duration_days - 1);
+                                        courseEndDate = new Date(end.getFullYear(), end.getMonth(), end.getDate());
+                                        const todayDate = new Date();
+                                        const todayMidnight = new Date(todayDate.getFullYear(), todayDate.getMonth(), todayDate.getDate());
+                                        if (courseEndDate < todayMidnight) {
+                                            courseCompleted = true;
+                                        }
+                                    }
+                                    return (
+                                        <div key={med.id}>
+                                            {courseCompleted && (
+                                                <div className="flex items-center mb-2">
+                                                    <span className="ml-2 px-2 py-1 bg-emerald-100 text-emerald-700 rounded-full text-xs font-bold">Course Completed</span>
+                                                    <span className="ml-3 text-xs font-semibold text-slate-400">No further actions allowed</span>
+                                                </div>
+                                            )}
+                                            {med.schedules.map(schedule => {
+                                                const isTaken = !!dailyLogs[schedule.id];
+                                                return (
+                                                    <Card
+                                                        key={schedule.id}
+                                                        className={cn(
+                                                            "transition-all duration-300 border-none shadow-sm hover:shadow-md",
+                                                            isTaken ? "bg-emerald-50/50 ring-1 ring-emerald-100" : "bg-white ring-1 ring-slate-100"
+                                                        )}
+                                                    >
+                                                        <CardContent className="p-4 sm:p-5 flex items-center justify-between gap-4">
+                                                            <div className="flex items-center gap-4">
+                                                                <div className={cn(
+                                                                    "h-12 w-12 rounded-2xl flex items-center justify-center transition-colors",
+                                                                    isTaken ? "bg-emerald-100 text-emerald-600" : "bg-blue-50 text-blue-600"
+                                                                )}>
+                                                                    <Pill className="h-6 w-6" />
+                                                                </div>
+                                                                <div>
+                                                                    <h4 className="font-bold text-slate-900">{med.name}</h4>
+                                                                    <div className="flex items-center gap-2 text-slate-500 text-sm font-medium">
+                                                                        <span>{med.dosage}</span>
+                                                                        <span className="h-1 w-1 bg-slate-300 rounded-full" />
+                                                                        <div className="flex items-center text-blue-600 font-bold">
+                                                                            <Clock className="h-3.5 w-3.5 mr-1" />
+                                                                            {schedule.time.slice(0, 5)}
+                                                                        </div>
+                                                                    </div>
                                                                 </div>
                                                             </div>
-                                                        </div>
-                                                    </div>
-                                                    <div className="flex flex-col sm:flex-row items-center gap-3">
-                                                        {!isTaken && (
-                                                            <div className="relative">
-                                                                <input
-                                                                    type="file"
-                                                                    accept="image/*"
-                                                                    capture="environment"
-                                                                    className="hidden"
-                                                                    id={`photo-${schedule.id}`}
-                                                                    onChange={(e) => handlePhotoChange(schedule.id, e)}
-                                                                />
-                                                                {pendingPhotos[schedule.id] ? (
-                                                                    <div className="relative group">
-                                                                        <img
-                                                                            src={URL.createObjectURL(pendingPhotos[schedule.id])}
-                                                                            alt="Preview"
-                                                                            className="h-11 w-11 rounded-xl object-cover ring-2 ring-blue-100"
-                                                                        />
-                                                                        <button
-                                                                            onClick={() => handleRemovePhoto(schedule.id)}
-                                                                            className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white rounded-full p-0.5 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
-                                                                        >
-                                                                            <X className="h-3 w-3" />
-                                                                        </button>
-                                                                    </div>
-                                                                ) : (
+                                                            <div className="flex flex-col sm:flex-row items-center gap-3">
+                                                                {courseCompleted ? null : (
+                                                                    !isTaken && (
+                                                                        <div className="relative">
+                                                                            <input
+                                                                                type="file"
+                                                                                accept="image/*"
+                                                                                capture="environment"
+                                                                                className="hidden"
+                                                                                id={`photo-${schedule.id}`}
+                                                                                onChange={(e) => handlePhotoChange(schedule.id, e)}
+                                                                            />
+                                                                            {pendingPhotos[schedule.id] ? (
+                                                                                <div className="relative group">
+                                                                                    <img
+                                                                                        src={URL.createObjectURL(pendingPhotos[schedule.id])}
+                                                                                        alt="Preview"
+                                                                                        className="h-11 w-11 rounded-xl object-cover ring-2 ring-blue-100"
+                                                                                    />
+                                                                                    <button
+                                                                                        onClick={() => handleRemovePhoto(schedule.id)}
+                                                                                        className="absolute -top-1.5 -right-1.5 bg-rose-500 text-white rounded-full p-0.5 shadow-sm opacity-0 group-hover:opacity-100 transition-opacity"
+                                                                                    >
+                                                                                        <X className="h-3 w-3" />
+                                                                                    </button>
+                                                                                </div>
+                                                                            ) : (
+                                                                                <Button
+                                                                                    variant="ghost"
+                                                                                    size="icon"
+                                                                                    onClick={() => document.getElementById(`photo-${schedule.id}`)?.click()}
+                                                                                    className="h-11 w-11 rounded-xl text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                                                                                >
+                                                                                    <Camera className="h-5 w-5" />
+                                                                                </Button>
+                                                                            )}
+                                                                        </div>
+                                                                    )
+                                                                )}
+                                                                {courseCompleted ? null : (
                                                                     <Button
-                                                                        variant="ghost"
-                                                                        size="icon"
-                                                                        onClick={() => document.getElementById(`photo-${schedule.id}`)?.click()}
-                                                                        className="h-11 w-11 rounded-xl text-slate-400 hover:text-blue-600 hover:bg-blue-50 transition-colors"
+                                                                        onClick={() => !isTaken && handleMarkAsTaken(med.id, schedule.id)}
+                                                                        disabled={isTaken || uploading === schedule.id}
+                                                                        className={cn(
+                                                                            "rounded-xl font-bold h-11 px-6 transition-all transform",
+                                                                            isTaken
+                                                                                ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-100 cursor-default"
+                                                                                : "bg-white border-2 border-blue-600 text-blue-600 hover:bg-blue-600 hover:text-white shadow-sm active:scale-95"
+                                                                        )}
                                                                     >
-                                                                        <Camera className="h-5 w-5" />
+                                                                        {uploading === schedule.id ? (
+                                                                            <span className="flex items-center">
+                                                                                <Loader2 className="h-5 w-5 mr-2 animate-spin" />
+                                                                                Uploading...
+                                                                            </span>
+                                                                        ) : isTaken ? (
+                                                                            <span className="flex items-center">
+                                                                                <CheckCircle2 className="h-5 w-5 mr-2" />
+                                                                                Taken
+                                                                            </span>
+                                                                        ) : (
+                                                                            "Mark Taken"
+                                                                        )}
                                                                     </Button>
                                                                 )}
                                                             </div>
-                                                        )}
-                                                        <Button
-                                                            onClick={() => !isTaken && handleMarkAsTaken(med.id, schedule.id)}
-                                                            disabled={isTaken || uploading === schedule.id}
-                                                            className={cn(
-                                                                "rounded-xl font-bold h-11 px-6 transition-all transform",
-                                                                isTaken
-                                                                    ? "bg-emerald-100 text-emerald-700 hover:bg-emerald-100 cursor-default"
-                                                                    : "bg-white border-2 border-blue-600 text-blue-600 hover:bg-blue-600 hover:text-white shadow-sm active:scale-95"
-                                                            )}
-                                                        >
-                                                            {uploading === schedule.id ? (
-                                                                <span className="flex items-center">
-                                                                    <Loader2 className="h-5 w-5 mr-2 animate-spin" />
-                                                                    Uploading...
-                                                                </span>
-                                                            ) : isTaken ? (
-                                                                <span className="flex items-center">
-                                                                    <CheckCircle2 className="h-5 w-5 mr-2" />
-                                                                    Taken
-                                                                </span>
-                                                            ) : (
-                                                                "Mark Taken"
-                                                            )}
-                                                        </Button>
-                                                    </div>
-                                                </CardContent>
-                                            </Card>
-                                        );
-                                    })
-                                ))}
+                                                        </CardContent>
+                                                    </Card>
+                                                );
+                                            })}
+                                        </div>
+                                    );
+                                })}
                             </div>
                         )}
                     </div>
@@ -487,6 +601,8 @@ export default function PatientDashboardPage() {
                                             const month = viewDate.getMonth();
                                             const daysInMonth = new Date(year, month + 1, 0).getDate();
                                             const firstDayOfMonth = new Date(year, month, 1).getDay();
+                                            console.log(daysInMonth,firstDayOfMonth,year,month, "year,month....");
+                                            
 
                                             const elements = [];
 
@@ -494,6 +610,9 @@ export default function PatientDashboardPage() {
                                             for (let i = 0; i < firstDayOfMonth; i++) {
                                                 elements.push(<div key={`empty-${i}`} />);
                                             }
+
+                                            console.log(elements,"elements");
+                                            
 
                                             // Add day slots
                                             for (let day = 1; day <= daysInMonth; day++) {
@@ -503,6 +622,9 @@ export default function PatientDashboardPage() {
 
                                                 const hasTaken = dayLogs.some(l => l.status === 'taken');
                                                 const hasMissed = dayLogs.some(l => l.status === 'missed');
+
+                                                console.log(dateStr,isToday,dayLogs,"day slots" );
+                                                
 
                                                 elements.push(
                                                     <div key={day} className="relative flex flex-col items-center">
