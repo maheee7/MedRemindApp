@@ -39,7 +39,7 @@ export default function PatientDashboardPage() {
         monthlyRate: 0
     });
     const [viewDate, setViewDate] = useState(new Date());
-    const [monthlyLogs, setMonthlyLogs] = useState<Record<string, { status: 'taken' | 'missed' }[]>>({});
+    const [monthlyLogs, setMonthlyLogs] = useState<Record<string, { status: 'taken' | 'missed' | 'scheduled' }[]>>({});
     const [patientName, setPatientName] = useState("");
 
     const today = new Date().toLocaleDateString('en-CA');
@@ -59,11 +59,14 @@ export default function PatientDashboardPage() {
 
             const startOfMonth = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1).toLocaleDateString('en-CA');
             const endOfMonth = new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 0).toLocaleDateString('en-CA');
+            const monthStart = new Date(viewDate.getFullYear(), viewDate.getMonth(), 1);
+            const monthEnd = new Date(viewDate.getFullYear(), viewDate.getMonth() + 1, 0);
+            const todayStr = new Date().toLocaleDateString('en-CA');
 
-            // Fetch all medications for the user (need start_date, duration_days)
+            // Fetch all medications for the user
             const { data: meds, error: medsError } = await supabase
                 .from('medications')
-                .select('id, start_date, duration_days')
+                .select('id, start_date, duration_days, duration_type')
                 .eq('user_id', user.id);
             if (medsError) throw medsError;
 
@@ -83,51 +86,53 @@ export default function PatientDashboardPage() {
                 logsByMedDate[log.medication_id][log.date] = { status: log.status };
             });
 
-            console.log(logsByMedDate, "check the daily logs");
-            console.log(meds, "check the meds");
+            // Build scheduled, taken, and missed days for each medication
+            const logsByDate: Record<string, { status: 'taken' | 'missed' | 'scheduled' }[]> = {};
 
-
-            // Build missed days for each medication
-            const logsByDate: Record<string, { status: 'taken' | 'missed' }[]> = {};
-            const todayStr = new Date().toLocaleDateString('en-CA');
             meds?.forEach(med => {
-                if (!med.start_date || !med.duration_days) return;
-                const start = new Date(med.start_date);
-                const duration = med.duration_days;
+                if (!med.start_date) return;
+                const [y, m, d_start] = med.start_date.split('-').map(Number);
+                const medStart = new Date(y, m - 1, d_start);
 
-                console.log(start, duration, "days calc");
+                let medEnd = null;
+                if (med.duration_type === 'days' && med.duration_days) {
+                    medEnd = new Date(medStart);
+                    medEnd.setDate(medStart.getDate() + med.duration_days - 1);
+                }
 
-                for (let i = 0; i < duration; i++) {
-                    const d = new Date(start);
-                    d.setDate(start.getDate() + i);
+                // Determine the range of days in this month to check
+                const loopStart = new Date(Math.max(medStart.getTime(), monthStart.getTime()));
+                const loopEnd = medEnd
+                    ? new Date(Math.min(medEnd.getTime(), monthEnd.getTime()))
+                    : monthEnd;
+
+                for (let d = new Date(loopStart); d <= loopEnd; d.setDate(d.getDate() + 1)) {
                     const dateStr = d.toLocaleDateString('en-CA');
-                    // Only consider days in this month
-                    if (dateStr < startOfMonth || dateStr > endOfMonth) continue;
-                    // Do not mark today or future days as missed
-                    if (dateStr >= todayStr) continue;
-                    // If no log for this med/date, mark as missed
-                    if (!logsByMedDate[med.id] || !logsByMedDate[med.id][dateStr]) {
-                        if (!logsByDate[dateStr]) logsByDate[dateStr] = [];
-                        logsByDate[dateStr].push({ status: 'missed' });
+                    if (!logsByDate[dateStr]) logsByDate[dateStr] = [];
+
+                    if (dateStr < todayStr) {
+                        // Past: check logs for THIS medication
+                        if (!logsByMedDate[med.id] || !logsByMedDate[med.id][dateStr]) {
+                            logsByDate[dateStr].push({ status: 'missed' });
+                        } else {
+                            logsByDate[dateStr].push({ status: logsByMedDate[med.id][dateStr].status });
+                        }
                     } else {
-                        // If there is a log, add its status
-                        if (!logsByDate[dateStr]) logsByDate[dateStr] = [];
-                        logsByDate[dateStr].push({ status: logsByMedDate[med.id][dateStr].status });
+                        // Future/Today: mark as scheduled
+                        if (!logsByDate[dateStr].some(l => l.status === 'scheduled')) {
+                            logsByDate[dateStr].push({ status: 'scheduled' });
+                        }
                     }
                 }
             });
 
-            console.log("logsbydate", logsByMedDate, "dddd", logsByDate);
-
-            // Also add any taken/missed logs that exist for this month but not in the above loop (e.g., for lifetime meds)
+            // Add any existing logs (in case of edge cases)
             logs?.forEach(log => {
                 if (!logsByDate[log.date]) logsByDate[log.date] = [];
                 if (!logsByDate[log.date].some(l => l.status === log.status)) {
                     logsByDate[log.date].push({ status: log.status });
                 }
             });
-
-            console.log(logsByDate, "999");
 
             setMonthlyLogs(logsByDate);
             calculateStats(logsByDate);
@@ -198,7 +203,7 @@ export default function PatientDashboardPage() {
     };
 
     // Calculate daily progress, day streak, and monthly rate from monthlyLogs
-    const calculateStats = (logsByDate: Record<string, { status: 'taken' | 'missed' }[]>) => {
+    const calculateStats = (logsByDate: Record<string, { status: 'taken' | 'missed' | 'scheduled' }[]>) => {
         // Daily progress: percent of today's doses taken
         const todayStr = new Date().toLocaleDateString('en-CA');
         const todayLogs = logsByDate[todayStr] || [];
@@ -639,15 +644,14 @@ export default function PatientDashboardPage() {
 
                                                 const hasTaken = dayLogs.some(l => l.status === 'taken');
                                                 const hasMissed = dayLogs.some(l => l.status === 'missed');
-
-                                                console.log(dateStr, isToday, dayLogs, "day slots");
-
+                                                const hasScheduled = dayLogs.some(l => l.status === 'scheduled');
 
                                                 elements.push(
                                                     <div key={day} className="relative flex flex-col items-center">
                                                         <div className={cn(
                                                             "h-8 w-8 rounded-xl flex items-center justify-center text-xs font-bold transition-all relative z-10",
-                                                            isToday ? "bg-blue-600 text-white shadow-lg shadow-blue-200" : "text-slate-600",
+                                                            isToday ? "bg-blue-600 text-white shadow-lg shadow-blue-200" :
+                                                                hasScheduled ? "bg-blue-50 text-blue-600 ring-1 ring-blue-100" : "text-slate-600",
                                                         )}>
                                                             {day}
                                                             {isToday && (
@@ -657,6 +661,7 @@ export default function PatientDashboardPage() {
                                                         <div className="mt-1 flex gap-0.5 h-1">
                                                             {hasTaken && <div className="w-1 h-1 bg-emerald-400 rounded-full" />}
                                                             {hasMissed && <div className="w-1 h-1 bg-rose-400 rounded-full" />}
+                                                            {hasScheduled && !isToday && <div className="w-1 h-1 bg-blue-300 rounded-full" />}
                                                         </div>
                                                     </div>
                                                 );
@@ -674,6 +679,10 @@ export default function PatientDashboardPage() {
                                         <div className="flex items-center gap-2 text-xs font-semibold text-slate-500">
                                             <div className="h-2 w-2 bg-rose-400 rounded-full" />
                                             <span>Missed medication</span>
+                                        </div>
+                                        <div className="flex items-center gap-2 text-xs font-semibold text-slate-500">
+                                            <div className="h-2 w-2 bg-blue-300 rounded-full" />
+                                            <span>Future Medicine scheduled</span>
                                         </div>
                                     </div>
                                 </div>
