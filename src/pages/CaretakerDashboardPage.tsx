@@ -55,12 +55,11 @@ export default function CaretakerDashboardPage() {
     const [dailyLogs, setDailyLogs] = useState<Record<string, MedicationLog>>({});
     const [activeTab, setActiveTab] = useState<'overview' | 'activity' | 'calendar' | 'notifications'>('overview');
     const [stats, setStats] = useState({
-        adherenceRate: 85,
-        streak: 5,
+        streak: 0,
         missedThisMonth: 0,
         takenThisMonth: 0,
         remainingThisMonth: 0,
-        takenThisWeek: 4
+        takenThisWeek: 0
     });
     const [sendingEmail, setSendingEmail] = useState(false);
     const [caretakerEmail, setCaretakerEmail] = useState<string>("");
@@ -325,10 +324,7 @@ export default function CaretakerDashboardPage() {
     };
 
     const calculateStats = (meds: Medication[], logs: MedicationLog[], historicalLogs?: MedicationLog[]) => {
-        const totalSchedules = meds.reduce((acc, med) => acc + med.schedules.length, 0);
         const takenToday = logs.filter(log => log.status === 'taken').length;
-
-        const adherence = totalSchedules > 0 ? Math.round((takenToday / totalSchedules) * 100) : 100;
 
         // Day streak: consecutive previous days (ending with yesterday) with no missed logs
         let streak = 0;
@@ -387,7 +383,6 @@ export default function CaretakerDashboardPage() {
 
         setStats(prev => ({
             ...prev,
-            adherenceRate: adherence,
             streak,
             takenThisWeek: takenToday,
             remainingThisMonth: isLifetime ? 999 : (maxRemainingDays > 0 ? maxRemainingDays : 0)
@@ -769,8 +764,7 @@ export default function CaretakerDashboardPage() {
                                     <CardContent className="p-8 space-y-10">
                                         {/* Toggles */}
                                         {[
-                                            { id: 'emailNotifications', label: 'Email Notifications', desc: 'Receive medication alerts via email' },
-                                            // { id: 'missedAlerts', label: 'Missed Medication Alerts', desc: 'Get notified when medication is not taken on time' }
+                                            { id: 'emailNotifications', label: 'Email Notifications', desc: 'Receive medication alerts via email' }
                                         ].map(item => (
                                             <div key={item.id} className="flex items-center justify-between group">
                                                 <div className="space-y-1">
@@ -792,33 +786,7 @@ export default function CaretakerDashboardPage() {
                                             </div>
                                         ))}
 
-                                        <div className="grid grid-cols-1 md:grid-cols-2 gap-8 pt-4 border-t border-slate-50">
-                                            <div className="space-y-3">
-                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-1">Alert Threshold</label>
-                                                <select
-                                                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl h-14 px-4 font-bold text-slate-700 focus:ring-4 focus:ring-blue-100 focus:border-blue-500 transition-all outline-none"
-                                                    value={notificationSettings.alertThresholdHours}
-                                                    onChange={e => setNotificationSettings(p => ({ ...p, alertThresholdHours: Number(e.target.value) }))}
-                                                >
-                                                    <option value={1}>1 Hour After Miss</option>
-                                                    {/* <option value={2}>2 Hours After Miss</option>
-                                                    <option value={3}>3 Hours After Miss</option> */}
-                                                </select>
-                                                <p className="text-[10px] text-slate-400 font-bold px-1 uppercase tracking-tighter">Time to wait before sending critical alert</p>
-                                            </div>
-                                            {/* <div className="space-y-3">
-                                                <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-1">Daily Reminder Time</label>
-                                                <input
-                                                    type="time"
-                                                    className="w-full bg-slate-50 border-2 border-slate-100 rounded-2xl h-14 px-4 font-bold text-slate-700 focus:ring-4 focus:ring-blue-100 focus:border-blue-500 transition-all outline-none"
-                                                    value={notificationSettings.dailyReminderTime}
-                                                    onChange={e => setNotificationSettings(p => ({ ...p, dailyReminderTime: e.target.value }))}
-                                                />
-                                                <p className="text-[10px] text-slate-400 font-bold px-1 uppercase tracking-tighter">Time to check if today's medication was taken</p>
-                                            </div> */}
-                                        </div>
-
-                                        <div className="space-y-3">
+                                        <div className="space-y-3 pt-4 border-t border-slate-50">
                                             <label className="text-xs font-black text-slate-400 uppercase tracking-widest px-1">Notification Email Address</label>
                                             <div className="relative">
                                                 <Mail className="absolute left-4 top-1/2 -translate-y-1/2 h-5 w-5 text-slate-400" />
@@ -859,7 +827,7 @@ export default function CaretakerDashboardPage() {
                                                     <p className="text-xs text-slate-600 leading-relaxed font-medium">Hello,</p>
                                                     <p className="text-xs text-slate-600 leading-relaxed font-medium">This is a reminder that {patientName} has not taken her medication today.</p>
                                                     <p className="text-xs text-slate-600 leading-relaxed font-medium">Please check with her to ensure she takes her prescribed medication.</p>
-                                                    <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest pt-4">Current adherence rate: {stats.adherenceRate}% (5-day streak)</p>
+                                                    <p className="text-[10px] font-black text-blue-600 uppercase tracking-widest pt-4">Current streak: {stats.streak} {stats.streak === 1 ? 'day' : 'days'}</p>
                                                 </div>
                                             </div>
                                         </CardContent>
@@ -889,14 +857,6 @@ export default function CaretakerDashboardPage() {
                                     )}
                                     {sendingEmail ? "Sending..." : "Send Reminder Email"}
                                 </Button>
-                                {/* <Button
-                                    className="w-full justify-start gap-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 h-12 rounded-xl group"
-                                    variant="outline"
-                                    onClick={() => setActiveTab('notifications')}
-                                >
-                                    <Bell className="h-4 w-4 text-orange-500 transition-transform group-hover:scale-110" />
-                                    Configure Notifications
-                                </Button> */}
                                 <Button
                                     className="w-full justify-start gap-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 h-12 rounded-xl group"
                                     variant="outline"

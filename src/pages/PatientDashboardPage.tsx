@@ -10,7 +10,9 @@ interface Medication {
     id: string;
     name: string;
     dosage: string;
+    start_date: string;
     duration_type: string;
+    duration_days: number | null;
     schedules: {
         id: string;
         time: string;
@@ -77,9 +79,9 @@ export default function PatientDashboardPage() {
                 logsByMedDate[log.medication_id][log.date] = { status: log.status };
             });
 
-            console.log(logsByMedDate,"check the daily logs");
-            console.log(meds,"check the meds");
-            
+            console.log(logsByMedDate, "check the daily logs");
+            console.log(meds, "check the meds");
+
 
             // Build missed days for each medication
             const logsByDate: Record<string, { status: 'taken' | 'missed' }[]> = {};
@@ -88,9 +90,9 @@ export default function PatientDashboardPage() {
                 if (!med.start_date || !med.duration_days) return;
                 const start = new Date(med.start_date);
                 const duration = med.duration_days;
-                
-                console.log(start, duration,"days calc");
-                
+
+                console.log(start, duration, "days calc");
+
                 for (let i = 0; i < duration; i++) {
                     const d = new Date(start);
                     d.setDate(start.getDate() + i);
@@ -111,8 +113,8 @@ export default function PatientDashboardPage() {
                 }
             });
 
-            console.log("logsbydate",logsByMedDate,"dddd",logsByDate);
-            
+            console.log("logsbydate", logsByMedDate, "dddd", logsByDate);
+
             // Also add any taken/missed logs that exist for this month but not in the above loop (e.g., for lifetime meds)
             logs?.forEach(log => {
                 if (!logsByDate[log.date]) logsByDate[log.date] = [];
@@ -121,8 +123,8 @@ export default function PatientDashboardPage() {
                 }
             });
 
-            console.log(logsByDate,"999");
-            
+            console.log(logsByDate, "999");
+
             setMonthlyLogs(logsByDate);
             calculateStats(logsByDate);
         } catch (err) {
@@ -171,8 +173,7 @@ export default function PatientDashboardPage() {
             });
             setDailyLogs(logsMap);
 
-            // Calculate stats
-            calculateStats(meds || [], logs || []);
+            // Stats are handled by fetchMonthlyLogs
 
         } catch (err) {
             console.error("Error fetching dashboard data:", err);
@@ -293,6 +294,7 @@ export default function PatientDashboardPage() {
 
             // Refresh data
             fetchData();
+            fetchMonthlyLogs();
         } catch (err: any) {
             console.error("Error in handleMarkAsTaken:", err);
             alert(err.message || "An unexpected error occurred.");
@@ -356,9 +358,9 @@ export default function PatientDashboardPage() {
                         <Button variant="outline" size="sm" className="hidden sm:flex text-slate-600 font-semibold" onClick={() => navigate('/caretaker-dashboard')}>
                             Switch to Caretaker
                         </Button>
-                        <Button 
-                            variant="ghost" 
-                            size="sm" 
+                        <Button
+                            variant="ghost"
+                            size="sm"
                             className="text-slate-400 hover:text-destructive transition-colors gap-2"
                             onClick={handleLogout}
                         >
@@ -601,8 +603,8 @@ export default function PatientDashboardPage() {
                                             const month = viewDate.getMonth();
                                             const daysInMonth = new Date(year, month + 1, 0).getDate();
                                             const firstDayOfMonth = new Date(year, month, 1).getDay();
-                                            console.log(daysInMonth,firstDayOfMonth,year,month, "year,month....");
-                                            
+                                            console.log(daysInMonth, firstDayOfMonth, year, month, "year,month....");
+
 
                                             const elements = [];
 
@@ -611,8 +613,8 @@ export default function PatientDashboardPage() {
                                                 elements.push(<div key={`empty-${i}`} />);
                                             }
 
-                                            console.log(elements,"elements");
-                                            
+                                            console.log(elements, "elements");
+
 
                                             // Add day slots
                                             for (let day = 1; day <= daysInMonth; day++) {
@@ -623,8 +625,8 @@ export default function PatientDashboardPage() {
                                                 const hasTaken = dayLogs.some(l => l.status === 'taken');
                                                 const hasMissed = dayLogs.some(l => l.status === 'missed');
 
-                                                console.log(dateStr,isToday,dayLogs,"day slots" );
-                                                
+                                                console.log(dateStr, isToday, dayLogs, "day slots");
+
 
                                                 elements.push(
                                                     <div key={day} className="relative flex flex-col items-center">
